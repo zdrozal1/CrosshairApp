@@ -63,7 +63,6 @@ public class ConfigUtils
         CheckAndSetDefaultValues();
     }
 
-
     private static void CheckAndSetDefaultValue(string property, string defaultValue)
     {
         var prop = new NameValueCollection();

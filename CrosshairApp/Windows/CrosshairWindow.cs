@@ -126,7 +126,7 @@ public class CrosshairWindow : Window
 
     private void ShowWindow()
     {
-        var settingsWindow = new MainWindow(this);
+        var settingsWindow = new SettingsWindow(this);
         settingsWindow.ShowDialog();
     }
 

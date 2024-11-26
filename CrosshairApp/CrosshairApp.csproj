@@ -50,18 +50,17 @@
     </ItemGroup>
     <ItemGroup>
         <Compile Include="Launcher.cs"/>
-        <Compile Include="MainWindow.cs"/>
         <Compile Include="Utils\ConfigUtils.cs"/>
         <Compile Include="Utils\CrosshairStyle.cs"/>
-        <Compile Include="Windows\CrosshairSettingsWindow.cs"/>
         <Compile Include="Windows\CrosshairWindow.cs"/>
+        <Compile Include="Windows\SettingsWindow.cs"/>
     </ItemGroup>
     <ItemGroup>
         <EmbeddedResource Include="Images\target.ico"/>
     </ItemGroup>
     <ItemGroup>
-        <Page Include="MainWindow.xaml">
-            <DependentUpon>MainWindow.cs</DependentUpon>
+        <Page Include="Windows\SettingsWindow.xaml">
+            <DependentUpon>SettingsWindow.cs</DependentUpon>
         </Page>
     </ItemGroup>
     <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>

@@ -3,19 +3,8 @@
 public enum CrosshairStyle
 {
     StandardCross,
+    Tee,
     Circle,
     Dot,
     CircleWithX
-}
-
-public enum CrosshairColor
-{
-    Red,
-    Green,
-    Blue,
-    Yellow,
-    White,
-    Purple,
-    Cyan,
-    Magenta
 }

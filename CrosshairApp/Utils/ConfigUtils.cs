@@ -107,7 +107,7 @@ public abstract class ConfigUtils
         SetActiveProfile(DefaultProfileName);
     }
 
-    private static void CheckAndSetDefaultValues(string profileName)
+    public static void CheckAndSetDefaultValues(string profileName)
     {
         ConfigWrite(profileName, "CrosshairColor", "#FFFF0000");
         ConfigWrite(profileName, "OutlineColor", "#FF000000");
@@ -122,6 +122,9 @@ public abstract class ConfigUtils
         ConfigWrite(profileName, "RotationAngle", "0");
         ConfigWrite(profileName, "XOffset", "0");
         ConfigWrite(profileName, "YOffset", "0");
+        ConfigWrite(profileName, "TargetProcess", "FortniteClient-Win64-Shipping.exe");
+        ConfigWrite(profileName, "ProcessCheckEnabled", "False");
+        ConfigWrite(profileName, "DynamicColorEnabled", "False");
     }
 
     public static bool GetEnableAdsProfile()

@@ -85,6 +85,18 @@ namespace CrosshairApp.Windows
             ColorTextBox.Text = ConfigUtils.ConfigRead(_currentProfile, "CrosshairColor", "#FFFF0000");
             OutlineColorTextBox.Text = ConfigUtils.ConfigRead(_currentProfile, "OutlineColor", "#FF000000");
 
+            ProcessTextBox.Text = ConfigUtils.ConfigRead(_currentProfile, "TargetProcess", "FortniteClient-Win64-Shipping.exe");
+
+            var checkEnabledStr = ConfigUtils.ConfigRead(_currentProfile, "ProcessCheckEnabled", "False");
+            if (bool.TryParse(checkEnabledStr, out bool checkEnabled))
+                ProcessEnabledCheckBox.IsChecked = checkEnabled;
+
+            var dynEnabledStr = ConfigUtils.ConfigRead(_currentProfile, "DynamicColorEnabled", "False");
+            if (bool.TryParse(dynEnabledStr, out bool dynEnabled))
+                DynamicColorCheckBox.IsChecked = dynEnabled;
+
+            UpdateColorControlsState(dynEnabled);
+
             InitializeSlider(LengthSlider, 0, 50,
                 Convert.ToDouble(ConfigUtils.ConfigRead(_currentProfile, "CrosshairLength", "8.0")));
 
@@ -120,6 +132,37 @@ namespace CrosshairApp.Windows
             UpdateProfileButtonVisibility();
             UpdateLabels();
             _isInternalUpdate = false;
+        }
+
+        private void OnProcessCheckChanged(object sender, RoutedEventArgs e)
+        {
+            if (_isInternalUpdate) return;
+            bool enabled = ProcessEnabledCheckBox.IsChecked == true;
+            ConfigUtils.ConfigWrite(_currentProfile, "ProcessCheckEnabled", enabled.ToString());
+            _mainWindow.SetProcessCheckEnabled(enabled);
+        }
+
+        private void OnProcessChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_isInternalUpdate) return;
+            ConfigUtils.ConfigWrite(_currentProfile, "TargetProcess", ProcessTextBox.Text);
+            _mainWindow.UpdateTargetProcess(ProcessTextBox.Text);
+        }
+
+        private void OnDynamicColorChanged(object sender, RoutedEventArgs e)
+        {
+            if (_isInternalUpdate) return;
+            bool enabled = DynamicColorCheckBox.IsChecked == true;
+            ConfigUtils.ConfigWrite(_currentProfile, "DynamicColorEnabled", enabled.ToString());
+
+            UpdateColorControlsState(enabled);
+            _mainWindow.SetDynamicColorEnabled(enabled);
+        }
+
+        private void UpdateColorControlsState(bool isDynamicEnabled)
+        {
+            ColorTextBox.IsEnabled = !isDynamicEnabled;
+            PickColorButton.IsEnabled = !isDynamicEnabled;
         }
 
         private void UpdateLabels()
@@ -168,8 +211,11 @@ namespace CrosshairApp.Windows
         {
             var dialog = new Window
             {
-                Title = "Create Profile", Width = 300, Height = 150,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner, Owner = this,
+                Title = "Create Profile",
+                Width = 300,
+                Height = 150,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this,
                 ResizeMode = ResizeMode.NoResize,
                 WindowStyle = WindowStyle.ToolWindow
             };
@@ -178,12 +224,13 @@ namespace CrosshairApp.Windows
             var textBox = new TextBox { Name = "ProfileNameTextBox" };
             var buttonPanel = new StackPanel
             {
-                Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right,
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
                 Margin = new Thickness(0, 10, 0, 0)
             };
             var okButton = new Button { Content = "OK", IsDefault = true, Width = 75, Margin = new Thickness(5) };
             var cancelButton = new Button
-                { Content = "Cancel", IsCancel = true, Width = 75, Margin = new Thickness(5) };
+            { Content = "Cancel", IsCancel = true, Width = 75, Margin = new Thickness(5) };
             buttonPanel.Children.Add(okButton);
             buttonPanel.Children.Add(cancelButton);
             stackPanel.Children.Add(textBlock);
@@ -327,7 +374,6 @@ namespace CrosshairApp.Windows
             }
             catch (Exception)
             {
-                // Ignore conversion errors while typing
             }
         }
 

@@ -1,8 +1,6 @@
-using CrosshairApp.Utils;
 using System;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Imaging;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -14,6 +12,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using CrosshairApp.Utils;
 using Application = System.Windows.Application;
 using Brush = System.Windows.Media.Brush;
 using Brushes = System.Windows.Media.Brushes;
@@ -30,52 +29,45 @@ public class CrosshairWindow : Window
     private const string TrayIconText = "Crosshair Application";
 
     private readonly Canvas _root;
-    private string _activeProfile;
-    private string _adsProfileName;
-    private bool _isAdsActive;
-    private bool _isAdsEnabled;
     private NotifyIcon _notifyIcon;
-    private string _originalProfileName;
     private SettingsWindow _settingsWindow;
-
     private DispatcherTimer _colorUpdateTimer;
-    public bool DynamicColorEnabled { get; set; }
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetForegroundWindow();
-
-    [DllImport("user32.dll")]
-    private static extern int GetWindowThreadProcessId(IntPtr hWnd, out int lpdwProcessId);
-
-    [DllImport("user32.dll")]
-    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-
-    [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr hwnd);
-    [DllImport("gdi32.dll")] private static extern uint GetPixel(IntPtr hdc, int x, int y);
-    [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
-
-    private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
-    private const uint SWP_NOMOVE = 0x0002;
-    private const uint SWP_NOSIZE = 0x0001;
-    private const uint SWP_NOACTIVATE = 0x0010;
-
     private DispatcherTimer _processCheckTimer;
+
+    // Config State
+    private string _currentProfileName;
+    private bool _adsEnabledForProfile;
+    private VisualConfiguration _hipfireConfig;
+    private VisualConfiguration _adsConfig;
+    private VisualConfiguration _activeConfig;
+
+    // State Flags
+    private bool _isAdsActive;
+    private bool _isPreviewMode;
+    private bool _isPreviewingAds;
     private string _targetProcessName;
     private bool _userHidden;
     private bool _processCheckEnabled;
 
-    private readonly Brush[] _neonCandidates =
-    {
-        Brushes.Red,
-        Brushes.Lime,
-        Brushes.Blue,
-        Brushes.Yellow,
-        Brushes.Cyan,
-        Brushes.Magenta
-    };
-
+    // Dynamic Color
+    private readonly System.Drawing.Bitmap _pixelBuffer = new(40, 40, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
     private DateTime _lastColorUpdate = DateTime.MinValue;
     private Color _lastAverageBackground = Colors.Black;
+    private readonly Brush[] _neonCandidates =
+    {
+        Brushes.Red, Brushes.Lime, Brushes.Blue, Brushes.Yellow, Brushes.Cyan, Brushes.Magenta
+    };
+
+    // Native Imports
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern int GetWindowThreadProcessId(IntPtr hWnd, out int lpdwProcessId);
+    [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+    [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hwnd, int index);
+    [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr hwnd, int index, int newStyle);
+    private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOACTIVATE = 0x0010;
 
     public CrosshairWindow()
     {
@@ -86,11 +78,12 @@ public class CrosshairWindow : Window
         _root = new Canvas { IsHitTestVisible = false };
         Content = _root;
 
-        _isAdsEnabled = ConfigUtils.GetEnableAdsProfile();
-        _adsProfileName = ConfigUtils.GetAdsProfile();
+        _hipfireConfig = new VisualConfiguration();
+        _adsConfig = new VisualConfiguration();
+        _activeConfig = _hipfireConfig;
 
-        _originalProfileName = ConfigUtils.GetActiveProfile();
-        LoadProfile(_originalProfileName);
+        _currentProfileName = ConfigUtils.GetActiveProfile();
+        LoadProfile(_currentProfileName);
 
         MouseHook.Start();
         MouseHook.RightMouseDown += OnRightMouseDown;
@@ -103,77 +96,514 @@ public class CrosshairWindow : Window
             var hwnd = new WindowInteropHelper(this).Handle;
             SetWindowExTransparent(hwnd);
 
-            _processCheckTimer = new DispatcherTimer();
-            _processCheckTimer.Interval = TimeSpan.FromMilliseconds(500);
+            _processCheckTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
             _processCheckTimer.Tick += CheckActiveWindow;
             _processCheckTimer.Start();
 
-            _colorUpdateTimer = new DispatcherTimer();
-            _colorUpdateTimer.Interval = TimeSpan.FromMilliseconds(20);
+            _colorUpdateTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
             _colorUpdateTimer.Tick += UpdateDynamicColor;
             _colorUpdateTimer.Start();
         };
     }
 
-    private void LoadProfile(string profileName)
+    /**
+     * Loads all settings for the given profile, including the embedded ADS layer.
+     */
+    public void LoadProfile(string profileName)
     {
-        _activeProfile = profileName;
+        _currentProfileName = profileName;
 
-        CrosshairColor =
-            (SolidColorBrush)new BrushConverter().ConvertFrom(ConfigUtils.ConfigRead(_activeProfile, "CrosshairColor",
-                "#FFFF0000"));
-        OutlineColor =
-            (SolidColorBrush)new BrushConverter().ConvertFrom(ConfigUtils.ConfigRead(_activeProfile, "OutlineColor",
-                "#FF000000"));
-        var crosshairStyleStr = ConfigUtils.ConfigRead(_activeProfile, "CrosshairStyle", "StandardCross");
-        CrosshairStyle = (CrosshairStyle)Enum.Parse(typeof(CrosshairStyle), crosshairStyleStr, true);
-        CrosshairGap = Convert.ToDouble(ConfigUtils.ConfigRead(_activeProfile, "CrosshairGap", "9.7"));
-        CrosshairLength = Convert.ToDouble(ConfigUtils.ConfigRead(_activeProfile, "CrosshairLength", "8"));
-        CrosshairLengthY = Convert.ToDouble(ConfigUtils.ConfigRead(_activeProfile, "CrosshairLengthY", "8"));
-        CrosshairOpacity = Convert.ToDouble(ConfigUtils.ConfigRead(_activeProfile, "CrosshairOpacity", "1.0"));
-        LineThickness = Convert.ToDouble(ConfigUtils.ConfigRead(_activeProfile, "LineThickness", "3.4"));
-        LineThicknessY = Convert.ToDouble(ConfigUtils.ConfigRead(_activeProfile, "LineThicknessY", "3.4"));
-        OutlineThickness = Convert.ToDouble(ConfigUtils.ConfigRead(_activeProfile, "OutlineThickness", "1.0"));
-        RotationAngle = Convert.ToDouble(ConfigUtils.ConfigRead(_activeProfile, "RotationAngle", "0"));
-        XOffset = Convert.ToDouble(ConfigUtils.ConfigRead(_activeProfile, "XOffset", "0"));
-        YOffset = Convert.ToDouble(ConfigUtils.ConfigRead(_activeProfile, "YOffset", "0"));
+        LoadConfigInto(profileName, _hipfireConfig, "");
+        LoadConfigInto(profileName, _adsConfig, "ADS_");
 
-        _targetProcessName = ConfigUtils.ConfigRead(_activeProfile, "TargetProcess", "FortniteClient-Win64-Shipping.exe");
+        _targetProcessName = ConfigUtils.ConfigRead(profileName, "TargetProcess", "FortniteClient-Win64-Shipping.exe");
+        bool.TryParse(ConfigUtils.ConfigRead(profileName, "ProcessCheckEnabled", "False"), out _processCheckEnabled);
+        bool.TryParse(ConfigUtils.ConfigRead(profileName, "AdsEnabled", "False"), out _adsEnabledForProfile);
 
-        var checkEnabledStr = ConfigUtils.ConfigRead(_activeProfile, "ProcessCheckEnabled", "False");
-        bool.TryParse(checkEnabledStr, out _processCheckEnabled);
-
-        var dynamicEnabledStr = ConfigUtils.ConfigRead(_activeProfile, "DynamicColorEnabled", "False");
-        bool.TryParse(dynamicEnabledStr, out bool dynEnabled);
-        DynamicColorEnabled = dynEnabled;
-
-        if (DynamicColorEnabled)
-        {
-            var centerX = (int)SystemParameters.PrimaryScreenWidth / 2;
-            var centerY = (int)SystemParameters.PrimaryScreenHeight / 2;
-
-            var avgColor = GetAverageScreenColor(centerX, centerY, 20, 5);
-
-            var bestBrush = GetBestContrastBrush(avgColor, CrosshairColor, true);
-
-            CrosshairColor = bestBrush;
-
-            _lastAverageBackground = avgColor;
-            _lastColorUpdate = DateTime.Now;
-        }
-
-        UpdateCrosshairVisuals();
+        ResolveActiveConfiguration();
         CheckActiveWindow(null, null);
     }
 
-    public void SetDynamicColorEnabled(bool enabled)
+    private void LoadConfigInto(string profile, VisualConfiguration config, string prefix)
     {
-        DynamicColorEnabled = enabled;
-        if (!enabled)
+        config.CrosshairColor = SafeBrush(ConfigUtils.ConfigRead(profile, $"{prefix}CrosshairColor", "#FFFF0000"));
+        config.OutlineColor = SafeBrush(ConfigUtils.ConfigRead(profile, $"{prefix}OutlineColor", "#FF000000"));
+
+        if (Enum.TryParse(ConfigUtils.ConfigRead(profile, $"{prefix}CrosshairStyle", "StandardCross"), true, out CrosshairStyle style))
+            config.CrosshairStyle = style;
+        else
+            config.CrosshairStyle = CrosshairStyle.StandardCross;
+
+        config.CrosshairGap = SafeDouble(profile, $"{prefix}CrosshairGap", "9.7");
+        config.CrosshairLength = SafeDouble(profile, $"{prefix}CrosshairLength", "8");
+        config.CrosshairLengthY = SafeDouble(profile, $"{prefix}CrosshairLengthY", "8");
+        config.CrosshairOpacity = SafeDouble(profile, $"{prefix}CrosshairOpacity", "1.0");
+        config.LineThickness = SafeDouble(profile, $"{prefix}LineThickness", "3.4");
+        config.LineThicknessY = SafeDouble(profile, $"{prefix}LineThicknessY", "3.4");
+        config.OutlineThickness = SafeDouble(profile, $"{prefix}OutlineThickness", "1.0");
+        config.RotationAngle = SafeDouble(profile, $"{prefix}RotationAngle", "0");
+        config.XOffset = SafeDouble(profile, $"{prefix}XOffset", "0");
+        config.YOffset = SafeDouble(profile, $"{prefix}YOffset", "0");
+
+        bool.TryParse(ConfigUtils.ConfigRead(profile, $"{prefix}DynamicColorEnabled", "False"), out bool dyn);
+        config.DynamicColorEnabled = dyn;
+
+        if (config.DynamicColorEnabled)
         {
-            CrosshairColor = (SolidColorBrush)new BrushConverter().ConvertFrom(ConfigUtils.ConfigRead(_activeProfile, "CrosshairColor", "#FFFF0000"));
-            UpdateCrosshairVisuals();
+            var centerX = (int)SystemParameters.PrimaryScreenWidth / 2;
+            var centerY = (int)SystemParameters.PrimaryScreenHeight / 2;
+            var avgColor = GetAverageScreenColor(centerX, centerY, 20, 5);
+            config.CrosshairColor = GetBestContrastBrush(avgColor, config.CrosshairColor, true);
         }
+    }
+
+    private Brush SafeBrush(string hex)
+    {
+        try { return (SolidColorBrush)new BrushConverter().ConvertFrom(hex); }
+        catch { return Brushes.Red; }
+    }
+
+    private double SafeDouble(string profile, string key, string def)
+    {
+        return Convert.ToDouble(ConfigUtils.ConfigRead(profile, key, def));
+    }
+
+    /**
+     * Updates the rendering logic based on current state (Preview vs Live, ADS vs Hipfire).
+     */
+    private void ResolveActiveConfiguration()
+    {
+        if (_isPreviewMode)
+        {
+            _activeConfig = _isPreviewingAds ? _adsConfig : _hipfireConfig;
+        }
+        else
+        {
+            _activeConfig = (_isAdsActive && _adsEnabledForProfile) ? _adsConfig : _hipfireConfig;
+        }
+
+        UpdateCrosshairVisuals();
+    }
+
+    /**
+     * Called by SettingsWindow to force the crosshair to show ADS or Hipfire while editing.
+     */
+    public void SetPreviewMode(bool enabled, bool showAds)
+    {
+        _isPreviewMode = enabled;
+        _isPreviewingAds = showAds;
+        ResolveActiveConfiguration();
+    }
+
+    public void ToggleVisibility()
+    {
+        if (Visibility == Visibility.Visible)
+        {
+            Visibility = Visibility.Collapsed;
+            _userHidden = true;
+        }
+        else
+        {
+            Visibility = Visibility.Visible;
+            _userHidden = false;
+        }
+    }
+
+    public void SwitchToNextProfile()
+    {
+        CycleProfile(1);
+    }
+
+    public void SwitchToPreviousProfile()
+    {
+        CycleProfile(-1);
+    }
+
+    private void CycleProfile(int direction)
+    {
+        var profiles = ConfigUtils.GetProfileList();
+        if (profiles == null || profiles.Count == 0) return;
+
+        var currentIndex = profiles.FindIndex(p => p.Equals(_currentProfileName, StringComparison.OrdinalIgnoreCase));
+        var nextIndex = (currentIndex + direction + profiles.Count) % profiles.Count;
+
+        LoadProfile(profiles[nextIndex]);
+        _settingsWindow?.LoadCurrentProfileData(profiles[nextIndex]);
+    }
+
+    private void OnRightMouseDown(object sender, EventArgs e)
+    {
+        if (!_adsEnabledForProfile || _isPreviewMode) return;
+        _isAdsActive = true;
+        ResolveActiveConfiguration();
+    }
+
+    private void OnRightMouseUp(object sender, EventArgs e)
+    {
+        if (_isPreviewMode) return;
+        _isAdsActive = false;
+        ResolveActiveConfiguration();
+    }
+
+    /**
+         * Updated to prevent clipping for circular shapes (Circle and Dot).
+         * Forces a square window based on the X-Length (Diameter/Size).
+         */
+    private void UpdateCrosshairVisuals()
+    {
+        var c = _activeConfig;
+        double maxWidth;
+        double maxHeight;
+
+
+        if (c.CrosshairStyle == CrosshairStyle.Circle || c.CrosshairStyle == CrosshairStyle.Dot)
+        {
+
+
+            var size = c.CrosshairLength * 4 + c.OutlineThickness * 2 + c.LineThickness;
+            maxWidth = size;
+            maxHeight = size;
+        }
+        else
+        {
+            maxWidth = c.CrosshairLength * 4 + c.OutlineThickness * 2;
+            maxHeight = c.CrosshairLengthY * 4 + c.OutlineThickness * 2;
+        }
+
+        Width = Math.Max(maxWidth, 10);
+        Height = Math.Max(maxHeight, 10);
+
+        Left = (SystemParameters.PrimaryScreenWidth - Width) / 2 + c.XOffset;
+        Top = (SystemParameters.PrimaryScreenHeight - Height) / 2 + c.YOffset;
+
+        _root.Children.Clear();
+        AddCrosshair(_root);
+    }
+
+    private void AddCrosshair(Canvas root)
+    {
+        switch (_activeConfig.CrosshairStyle)
+        {
+            case CrosshairStyle.StandardCross: AddStandardCross(root); break;
+            case CrosshairStyle.Tee: AddTeeCross(root); break;
+            case CrosshairStyle.Circle: AddCircleCrosshair(root); break;
+            case CrosshairStyle.Dot: AddDotCrosshair(root); break;
+            default: AddStandardCross(root); break;
+        }
+
+
+
+        ApplyRotation(root);
+    }
+
+    private void AddDotCrosshair(Canvas root)
+    {
+
+        AddDotWithOutline(root, _activeConfig.CrosshairLength);
+    }
+
+    /**
+     * Renders a filled Dot with an optional outline.
+     * Uses layering (Outline Ellipse behind Main Ellipse) to ensure perfect rendering.
+     */
+    private void AddDotWithOutline(Canvas root, double diameter)
+    {
+        var c = _activeConfig;
+        var centerX = Width / 2;
+        var centerY = Height / 2;
+
+
+
+        if (c.OutlineThickness > 0)
+        {
+            var outlineDiameter = diameter + (c.OutlineThickness * 2);
+            var outline = new Ellipse
+            {
+                Width = outlineDiameter,
+                Height = outlineDiameter,
+                Fill = c.OutlineColor,
+                Opacity = c.CrosshairOpacity,
+                IsHitTestVisible = false
+            };
+
+            Canvas.SetLeft(outline, centerX - (outlineDiameter / 2));
+            Canvas.SetTop(outline, centerY - (outlineDiameter / 2));
+            root.Children.Add(outline);
+        }
+
+
+        var dot = new Ellipse
+        {
+            Width = diameter,
+            Height = diameter,
+            Fill = c.CrosshairColor,
+            Opacity = c.CrosshairOpacity,
+            IsHitTestVisible = false
+        };
+
+        Canvas.SetLeft(dot, centerX - (diameter / 2));
+        Canvas.SetTop(dot, centerY - (diameter / 2));
+        root.Children.Add(dot);
+    }
+
+    private void AddStandardCross(Canvas root)
+    {
+        var c = _activeConfig;
+        AddLineWithOutline(root, 0, -c.CrosshairLengthY - c.CrosshairGap / 2, 0, -c.CrosshairGap / 2, c.LineThicknessY);
+        AddLineWithOutline(root, 0, c.CrosshairGap / 2, 0, c.CrosshairLengthY + c.CrosshairGap / 2, c.LineThicknessY);
+        AddLineWithOutline(root, -c.CrosshairLength - c.CrosshairGap / 2, 0, -c.CrosshairGap / 2, 0, c.LineThickness);
+        AddLineWithOutline(root, c.CrosshairGap / 2, 0, c.CrosshairLength + c.CrosshairGap / 2, 0, c.LineThickness);
+    }
+
+    private void AddTeeCross(Canvas root)
+    {
+        var c = _activeConfig;
+        AddLineWithOutline(root, 0, c.CrosshairGap / 2, 0, c.CrosshairLengthY + c.CrosshairGap / 2, c.LineThicknessY);
+        AddLineWithOutline(root, -c.CrosshairLength - c.CrosshairGap / 2, 0, -c.CrosshairGap / 2, 0, c.LineThickness);
+        AddLineWithOutline(root, c.CrosshairGap / 2, 0, c.CrosshairLength + c.CrosshairGap / 2, 0, c.LineThickness);
+    }
+    private void AddCircleCrosshair(Canvas root)
+    {
+
+
+        double diameter = _activeConfig.CrosshairLength * 2;
+        AddCircleWithOutline(root, diameter);
+    }
+
+
+    private void AddCircleWithXCrosshair(Canvas root)
+    {
+        var c = _activeConfig;
+        AddCircleWithOutline(root, c.CrosshairLength * 2);
+        var adjustedLength = c.CrosshairLength - c.CrosshairGap;
+        AddLineWithOutline(root, -adjustedLength, -adjustedLength, adjustedLength, adjustedLength, c.LineThickness);
+        AddLineWithOutline(root, adjustedLength, -adjustedLength, -adjustedLength, adjustedLength, c.LineThickness);
+    }
+
+    private void AddLineWithOutline(Canvas root, double x1, double y1, double x2, double y2, double thickness)
+    {
+        var c = _activeConfig;
+        var centerX = Width / 2;
+        var centerY = Height / 2;
+
+        var outline = new Line
+        {
+            X1 = x1 + centerX,
+            Y1 = y1 + centerY,
+            X2 = x2 + centerX,
+            Y2 = y2 + centerY,
+            Stroke = c.OutlineColor,
+            StrokeThickness = thickness + c.OutlineThickness * 2,
+            Opacity = c.CrosshairOpacity,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round
+        };
+        var line = new Line
+        {
+            X1 = x1 + centerX,
+            Y1 = y1 + centerY,
+            X2 = x2 + centerX,
+            Y2 = y2 + centerY,
+            Stroke = c.CrosshairColor,
+            StrokeThickness = thickness,
+            Opacity = c.CrosshairOpacity,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round
+        };
+        root.Children.Add(outline);
+        root.Children.Add(line);
+    }
+
+    private void AddCircleWithOutline(Canvas root, double diameter)
+    {
+        var c = _activeConfig;
+        var centerX = Width / 2;
+        var centerY = Height / 2;
+
+
+
+
+
+
+        if (c.OutlineThickness > 0)
+        {
+            var outlineThickness = c.LineThickness + (c.OutlineThickness * 2);
+            var outlineDiameter = diameter + (c.OutlineThickness * 2);
+
+            var outlineCircle = new Ellipse
+            {
+                Width = outlineDiameter,
+                Height = outlineDiameter,
+                Stroke = c.OutlineColor,
+                StrokeThickness = outlineThickness,
+                Opacity = c.CrosshairOpacity,
+                IsHitTestVisible = false
+            };
+
+
+            Canvas.SetLeft(outlineCircle, centerX - (outlineDiameter / 2));
+            Canvas.SetTop(outlineCircle, centerY - (outlineDiameter / 2));
+            root.Children.Add(outlineCircle);
+        }
+
+
+        var mainCircle = new Ellipse
+        {
+            Width = diameter,
+            Height = diameter,
+            Stroke = c.CrosshairColor,
+            StrokeThickness = c.LineThickness,
+            Opacity = c.CrosshairOpacity,
+            IsHitTestVisible = false
+        };
+
+        Canvas.SetLeft(mainCircle, centerX - (diameter / 2));
+        Canvas.SetTop(mainCircle, centerY - (diameter / 2));
+        root.Children.Add(mainCircle);
+    }
+
+    private void ApplyRotation(Canvas root)
+    {
+        root.RenderTransform = new RotateTransform(_activeConfig.RotationAngle, Width / 2, Height / 2);
+    }
+
+
+    private void UpdateDynamicColor(object sender, EventArgs e)
+    {
+        if (!_activeConfig.DynamicColorEnabled || Visibility != Visibility.Visible) return;
+        if ((DateTime.Now - _lastColorUpdate).TotalMilliseconds < 200) return;
+        _lastColorUpdate = DateTime.Now;
+
+        var centerX = (int)SystemParameters.PrimaryScreenWidth / 2;
+        var centerY = (int)SystemParameters.PrimaryScreenHeight / 2;
+        var avgColor = GetAverageScreenColor(centerX, centerY, 20, 5);
+
+        if (GetColorDistance(avgColor, _lastAverageBackground) < 1500) return;
+        _lastAverageBackground = avgColor;
+
+        var bestBrush = GetBestContrastBrush(avgColor, _activeConfig.CrosshairColor, false);
+
+        if (_activeConfig.CrosshairColor is SolidColorBrush currentSolid)
+        {
+            if (!_neonCandidates.Any(x => ((SolidColorBrush)x).Color == currentSolid.Color))
+            {
+                _activeConfig.CrosshairColor = bestBrush;
+                UpdateCrosshairVisuals();
+                return;
+            }
+        }
+        SmoothColorTransition(bestBrush);
+    }
+
+    private Color GetAverageScreenColor(int centerX, int centerY, int radius, int step)
+    {
+        int width = radius * 2;
+        int height = radius * 2;
+        int left = centerX - radius;
+        int top = centerY - radius;
+        if (left < 0 || top < 0) return Colors.Black;
+
+        try
+        {
+            using (var g = System.Drawing.Graphics.FromImage(_pixelBuffer))
+            {
+                g.CopyFromScreen(left, top, 0, 0, new System.Drawing.Size(width, height));
+            }
+            var rect = new System.Drawing.Rectangle(0, 0, width, height);
+            var bmd = _pixelBuffer.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly, _pixelBuffer.PixelFormat);
+            long rSum = 0, gSum = 0, bSum = 0;
+            int count = 0;
+            int pixelSize = 4;
+            unsafe
+            {
+                byte* ptr = (byte*)bmd.Scan0;
+                for (int y = 0; y < height; y += step)
+                {
+                    for (int x = 0; x < width; x += step)
+                    {
+                        int offset = (y * bmd.Stride) + (x * pixelSize);
+                        bSum += ptr[offset];
+                        gSum += ptr[offset + 1];
+                        rSum += ptr[offset + 2];
+                        count++;
+                    }
+                }
+            }
+            _pixelBuffer.UnlockBits(bmd);
+            if (count == 0) return Colors.Black;
+            return Color.FromRgb((byte)(rSum / count), (byte)(gSum / count), (byte)(bSum / count));
+        }
+        catch { return Colors.Black; }
+    }
+
+    private Brush GetBestContrastBrush(Color background, Brush currentBrush, bool ignoreHysteresis)
+    {
+        Brush bestBrush = _neonCandidates[0];
+        double maxDiff = -1;
+        double backgroundBrightness = background.R + background.G + background.B;
+        bool isBrightBackground = backgroundBrightness > 600;
+        double redBiasFactor = isBrightBackground ? 1.4 : 1.0;
+
+        foreach (var brush in _neonCandidates)
+        {
+            var solid = (SolidColorBrush)brush;
+            double dist = GetColorDistance(solid.Color, background);
+            if (solid.Color == Colors.Red && isBrightBackground) dist *= redBiasFactor;
+
+            if (dist > maxDiff)
+            {
+                maxDiff = dist;
+                bestBrush = brush;
+            }
+        }
+
+        if (!ignoreHysteresis && currentBrush is SolidColorBrush currentSolid)
+        {
+            double currentDist = GetColorDistance(currentSolid.Color, background);
+            if (currentSolid.Color == Colors.Red && isBrightBackground) currentDist *= redBiasFactor;
+            if (maxDiff < currentDist * 1.25) return currentBrush;
+        }
+        return bestBrush;
+    }
+
+    private double GetColorDistance(Color c1, Color c2)
+    {
+        long rDiff = c1.R - c2.R;
+        long gDiff = c1.G - c2.G;
+        long bDiff = c1.B - c2.B;
+        return (rDiff * rDiff) + (gDiff * gDiff) + (bDiff * bDiff);
+    }
+
+    private void SmoothColorTransition(Brush newBrush)
+    {
+        if (_activeConfig.CrosshairColor is not SolidColorBrush currentBrush || newBrush is not SolidColorBrush targetBrush) return;
+        if (currentBrush.Color == targetBrush.Color) return;
+
+        var freshBrush = new SolidColorBrush(currentBrush.Color);
+        _activeConfig.CrosshairColor = freshBrush;
+
+        var colorAnimation = new ColorAnimation
+        {
+            From = currentBrush.Color,
+            To = targetBrush.Color,
+            Duration = new Duration(TimeSpan.FromMilliseconds(200)),
+            FillBehavior = FillBehavior.HoldEnd
+        };
+
+        colorAnimation.Completed += (s, e) =>
+        {
+            _activeConfig.CrosshairColor = targetBrush;
+            UpdateCrosshairVisuals();
+        };
+
+        freshBrush.BeginAnimation(SolidColorBrush.ColorProperty, colorAnimation);
+        UpdateCrosshairVisuals();
+    }
+
+
+    public void UpdateTargetProcess(string processName)
+    {
+        _targetProcessName = processName;
     }
 
     public void SetProcessCheckEnabled(bool enabled)
@@ -185,9 +615,7 @@ public class CrosshairWindow : Window
     private void CheckActiveWindow(object sender, EventArgs e)
     {
         if (_userHidden) return;
-
         bool shouldBeVisible = false;
-
         if (!_processCheckEnabled || string.IsNullOrWhiteSpace(_targetProcessName))
         {
             shouldBeVisible = true;
@@ -214,10 +642,7 @@ public class CrosshairWindow : Window
                     }
                 }
             }
-            catch
-            {
-                shouldBeVisible = false;
-            }
+            catch { shouldBeVisible = false; }
         }
 
         if (shouldBeVisible)
@@ -230,119 +655,6 @@ public class CrosshairWindow : Window
         {
             if (Visibility == Visibility.Visible) Visibility = Visibility.Collapsed;
         }
-    }
-
-    public void ToggleVisibility()
-    {
-        if (Visibility == Visibility.Visible)
-        {
-            Visibility = Visibility.Collapsed;
-            _userHidden = true;
-        }
-        else
-        {
-            Visibility = Visibility.Visible;
-            _userHidden = false;
-        }
-    }
-
-    public void UpdateTargetProcess(string processName)
-    {
-        _targetProcessName = processName;
-    }
-
-    private Brush CrosshairColor { get; set; }
-    private Brush OutlineColor { get; set; }
-    private double CrosshairGap { get; set; }
-    private double CrosshairLength { get; set; }
-    private double CrosshairLengthY { get; set; }
-    private double CrosshairOpacity { get; set; }
-    private CrosshairStyle CrosshairStyle { get; set; }
-    private double LineThickness { get; set; }
-    private double LineThicknessY { get; set; }
-    private double OutlineThickness { get; set; }
-    private double RotationAngle { get; set; }
-    private double XOffset { get; set; }
-    private double YOffset { get; set; }
-
-    public void SwitchToNextProfile()
-    {
-        var profiles = ConfigUtils.GetProfileList();
-        var currentIndex = profiles.IndexOf(_activeProfile);
-        var nextIndex = (currentIndex + 1) % profiles.Count;
-        LoadProfile(profiles[nextIndex]);
-        _settingsWindow?.LoadProfileSettings(profiles[nextIndex]);
-    }
-
-    public void SwitchToPreviousProfile()
-    {
-        var profiles = ConfigUtils.GetProfileList();
-        var currentIndex = profiles.IndexOf(_activeProfile);
-        var prevIndex = (currentIndex - 1 + profiles.Count) % profiles.Count;
-        LoadProfile(profiles[prevIndex]);
-        _settingsWindow?.LoadProfileSettings(profiles[prevIndex]);
-    }
-
-    public void UpdateCrosshairProperties(Brush color, Brush outlineColor, CrosshairStyle style, double gap,
-        double length, double lengthY, double opacity, double thickness, double thicknessY, double outline,
-        double rotation, double xOffset, double yOffset)
-    {
-        if (!DynamicColorEnabled)
-        {
-            CrosshairColor = color;
-        }
-
-        OutlineColor = outlineColor;
-        CrosshairStyle = style;
-        CrosshairGap = gap;
-        CrosshairLength = length;
-        CrosshairLengthY = lengthY;
-        CrosshairOpacity = opacity;
-        LineThickness = thickness;
-        LineThicknessY = thicknessY;
-        OutlineThickness = outline;
-        RotationAngle = rotation;
-        XOffset = xOffset;
-        YOffset = yOffset;
-
-        UpdateCrosshairVisuals();
-    }
-
-    public void SwitchBaseProfile(string profileName)
-    {
-        _originalProfileName = profileName;
-        ConfigUtils.SetActiveProfile(profileName);
-
-        if (!_isAdsActive)
-        {
-            LoadProfile(_originalProfileName);
-        }
-    }
-
-    private void UpdateCrosshairVisuals()
-    {
-        var maxWidth = CrosshairLength * 4 + OutlineThickness * 2;
-        var maxHeight = CrosshairLengthY * 4 + OutlineThickness * 2;
-        Width = maxWidth;
-        Height = maxHeight;
-
-        Left = (SystemParameters.PrimaryScreenWidth - Width) / 2 + XOffset;
-        Top = (SystemParameters.PrimaryScreenHeight - Height) / 2 + YOffset;
-
-        _root.Children.Clear();
-        AddCrosshair(_root);
-    }
-
-    [DllImport("user32.dll")]
-    private static extern int GetWindowLong(IntPtr hwnd, int index);
-
-    [DllImport("user32.dll")]
-    private static extern int SetWindowLong(IntPtr hwnd, int index, int newStyle);
-
-    private static void SetWindowExTransparent(IntPtr hwnd)
-    {
-        var extendedStyle = GetWindowLong(hwnd, GwlExstyle);
-        SetWindowLong(hwnd, GwlExstyle, extendedStyle | WsExTransparent);
     }
 
     private void InitializeWindow()
@@ -370,7 +682,6 @@ public class CrosshairWindow : Window
                 new MenuItem("Exit", (_, _) => ExitApplication())
             ])
         };
-
         _notifyIcon.DoubleClick += (_, _) => ShowSettingsWindow();
     }
 
@@ -379,9 +690,12 @@ public class CrosshairWindow : Window
         if (_settingsWindow is not { IsLoaded: true })
         {
             _settingsWindow = new SettingsWindow(this);
-            _settingsWindow.Closed += (s, e) => _settingsWindow = null;
+            _settingsWindow.Closed += (s, e) =>
+            {
+                _settingsWindow = null;
+                SetPreviewMode(false, false);
+            };
         }
-
         _settingsWindow.Show();
         _settingsWindow.Activate();
     }
@@ -392,352 +706,27 @@ public class CrosshairWindow : Window
         Application.Current.Shutdown();
     }
 
-    private void AddCrosshair(Canvas root)
+    private static void SetWindowExTransparent(IntPtr hwnd)
     {
-        switch (CrosshairStyle)
-        {
-            case CrosshairStyle.StandardCross:
-                AddStandardCross(root);
-                break;
-            case CrosshairStyle.Tee:
-                AddTeeCross(root);
-                break;
-            case CrosshairStyle.Circle:
-                AddCircleCrosshair(root);
-                break;
-            case CrosshairStyle.Dot:
-                AddDotCrosshair(root);
-                break;
-            case CrosshairStyle.CircleWithX:
-                AddCircleWithXCrosshair(root);
-                break;
-            default:
-                AddStandardCross(root);
-                break;
-        }
-
-        ApplyRotation(root);
+        var extendedStyle = GetWindowLong(hwnd, GwlExstyle);
+        SetWindowLong(hwnd, GwlExstyle, extendedStyle | WsExTransparent);
     }
 
-    private void AddStandardCross(Canvas root)
+    private class VisualConfiguration
     {
-        AddLineWithOutline(root, 0, -CrosshairLengthY - CrosshairGap / 2, 0, -CrosshairGap / 2, LineThicknessY);
-        AddLineWithOutline(root, 0, CrosshairGap / 2, 0, CrosshairLengthY + CrosshairGap / 2, LineThicknessY);
-        AddLineWithOutline(root, -CrosshairLength - CrosshairGap / 2, 0, -CrosshairGap / 2, 0, LineThickness);
-        AddLineWithOutline(root, CrosshairGap / 2, 0, CrosshairLength + CrosshairGap / 2, 0, LineThickness);
-    }
-
-    private void AddTeeCross(Canvas root)
-    {
-        AddLineWithOutline(root, 0, CrosshairGap / 2, 0, CrosshairLengthY + CrosshairGap / 2, LineThicknessY);
-        AddLineWithOutline(root, -CrosshairLength - CrosshairGap / 2, 0, -CrosshairGap / 2, 0, LineThickness);
-        AddLineWithOutline(root, CrosshairGap / 2, 0, CrosshairLength + CrosshairGap / 2, 0, LineThickness);
-    }
-
-    private void AddCircleCrosshair(Canvas root)
-    {
-        AddCircleWithOutline(root, CrosshairLength * 2);
-    }
-
-    private void AddDotCrosshair(Canvas root)
-    {
-        AddDotWithOutline(root, CrosshairLength / 2);
-    }
-
-    private void AddCircleWithXCrosshair(Canvas root)
-    {
-        AddCircleWithOutline(root, CrosshairLength * 2);
-        var adjustedLength = CrosshairLength - CrosshairGap;
-        AddLineWithOutline(root, -adjustedLength, -adjustedLength, adjustedLength, adjustedLength, LineThickness);
-        AddLineWithOutline(root, adjustedLength, -adjustedLength, -adjustedLength, adjustedLength, LineThickness);
-    }
-
-    private void AddLineWithOutline(Canvas root, double x1, double y1, double x2, double y2, double thickness)
-    {
-        var centerX = Width / 2;
-        var centerY = Height / 2;
-
-        var outline = new Line
-        {
-            X1 = x1 + centerX,
-            Y1 = y1 + centerY,
-            X2 = x2 + centerX,
-            Y2 = y2 + centerY,
-            Stroke = OutlineColor,
-            StrokeThickness = thickness + OutlineThickness * 2,
-            Opacity = CrosshairOpacity,
-            StrokeStartLineCap = PenLineCap.Round,
-            StrokeEndLineCap = PenLineCap.Round
-        };
-        var line = new Line
-        {
-            X1 = x1 + centerX,
-            Y1 = y1 + centerY,
-            X2 = x2 + centerX,
-            Y2 = y2 + centerY,
-            Stroke = CrosshairColor,
-            StrokeThickness = thickness,
-            Opacity = CrosshairOpacity,
-            StrokeStartLineCap = PenLineCap.Round,
-            StrokeEndLineCap = PenLineCap.Round
-        };
-        root.Children.Add(outline);
-        root.Children.Add(line);
-    }
-
-    private void AddCircleWithOutline(Canvas root, double diameter)
-    {
-        var centerX = Width / 2;
-        var centerY = Height / 2;
-
-        var circle = new Ellipse
-        {
-            Width = diameter,
-            Height = diameter,
-            Stroke = CrosshairColor,
-            StrokeThickness = LineThickness,
-            Opacity = CrosshairOpacity
-        };
-
-        Canvas.SetLeft(circle, centerX - diameter / 2);
-        Canvas.SetTop(circle, centerY - diameter / 2);
-
-        root.Children.Add(circle);
-    }
-
-    private void AddDotWithOutline(Canvas root, double size)
-    {
-        var centerX = Width / 2;
-        var centerY = Height / 2;
-
-        var outline = new Ellipse
-        {
-            Width = size + OutlineThickness * 2,
-            Height = size + OutlineThickness * 2,
-            Fill = OutlineColor,
-            Opacity = CrosshairOpacity
-        };
-        var dot = new Ellipse { Width = size, Height = size, Fill = CrosshairColor, Opacity = CrosshairOpacity };
-
-        Canvas.SetLeft(outline, centerX - size / 2 - OutlineThickness);
-        Canvas.SetTop(outline, centerY - size / 2 - OutlineThickness);
-        Canvas.SetLeft(dot, centerX - size / 2);
-        Canvas.SetTop(dot, centerY - size / 2);
-
-        root.Children.Add(outline);
-        root.Children.Add(dot);
-    }
-
-    private void ApplyRotation(Canvas root)
-    {
-        root.RenderTransform = new RotateTransform(RotationAngle, Width / 2, Height / 2);
-    }
-
-    public void SetAdsEnabled(bool isEnabled)
-    {
-        _isAdsEnabled = isEnabled;
-        if (_isAdsEnabled || !_isAdsActive) return;
-        _isAdsActive = false;
-        LoadProfile(_originalProfileName);
-    }
-
-    public void SetAdsProfile(string profileName)
-    {
-        _adsProfileName = profileName;
-        if (_isAdsEnabled && _isAdsActive)
-        {
-            LoadProfile(_adsProfileName);
-        }
-    }
-
-    private void OnRightMouseDown(object sender, EventArgs e)
-    {
-        if (!_isAdsEnabled || _isAdsActive) return;
-        _isAdsActive = true;
-        LoadProfile(_adsProfileName);
-    }
-
-    private void OnRightMouseUp(object sender, EventArgs e)
-    {
-        if (!_isAdsActive) return;
-        _isAdsActive = false;
-        LoadProfile(_originalProfileName);
-    }
-
-    private Color GetAverageScreenColor(int centerX, int centerY, int radius, int step)
-    {
-        int width = radius * 2;
-        int height = radius * 2;
-        int left = centerX - radius;
-        int top = centerY - radius;
-
-        if (left < 0 || top < 0) return Colors.Black;
-
-        try
-        {
-            using (var bitmap = new System.Drawing.Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
-            {
-                using (var g = System.Drawing.Graphics.FromImage(bitmap))
-                {
-                    g.CopyFromScreen(left, top, 0, 0, bitmap.Size);
-                }
-
-                var rect = new System.Drawing.Rectangle(0, 0, width, height);
-                var bmd = bitmap.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly, bitmap.PixelFormat);
-
-                long rSum = 0, gSum = 0, bSum = 0;
-                int count = 0;
-                int pixelSize = 4;
-
-                unsafe
-                {
-                    byte* ptr = (byte*)bmd.Scan0;
-                    for (int y = 0; y < height; y += step)
-                    {
-                        for (int x = 0; x < width; x += step)
-                        {
-                            int offset = (y * bmd.Stride) + (x * pixelSize);
-                            bSum += ptr[offset];
-                            gSum += ptr[offset + 1];
-                            rSum += ptr[offset + 2];
-                            count++;
-                        }
-                    }
-                }
-
-                bitmap.UnlockBits(bmd);
-
-                if (count == 0) return Colors.Black;
-                return Color.FromRgb((byte)(rSum / count), (byte)(gSum / count), (byte)(bSum / count));
-            }
-        }
-        catch
-        {
-            return Colors.Black;
-        }
-    }
-
-    private void UpdateDynamicColor(object sender, EventArgs e)
-    {
-        if (!DynamicColorEnabled || Visibility != Visibility.Visible) return;
-
-        if ((DateTime.Now - _lastColorUpdate).TotalMilliseconds < 200) return;
-        _lastColorUpdate = DateTime.Now;
-
-        var centerX = (int)SystemParameters.PrimaryScreenWidth / 2;
-        var centerY = (int)SystemParameters.PrimaryScreenHeight / 2;
-
-        var avgColor = GetAverageScreenColor(centerX, centerY, 20, 5);
-
-        double bgChange = GetColorDistance(avgColor, _lastAverageBackground);
-        if (bgChange < 1500) return;
-
-        _lastAverageBackground = avgColor;
-
-        var bestBrush = GetBestContrastBrush(avgColor, CrosshairColor, false);
-
-        if (CrosshairColor is SolidColorBrush currentSolid)
-        {
-            bool isValidCandidate = false;
-            foreach (var candidate in _neonCandidates)
-            {
-                if (((SolidColorBrush)candidate).Color == currentSolid.Color)
-                {
-                    isValidCandidate = true;
-                    break;
-                }
-            }
-
-            if (!isValidCandidate)
-            {
-                CrosshairColor = bestBrush;
-                UpdateCrosshairVisuals();
-                return;
-            }
-        }
-
-        SmoothColorTransition(bestBrush);
-    }
-
-    private Brush GetBestContrastBrush(Color background, Brush currentBrush, bool ignoreHysteresis = false)
-    {
-        Brush bestBrush = _neonCandidates[0];
-        double maxDiff = -1;
-
-        double backgroundBrightness = background.R + background.G + background.B;
-        bool isBrightBackground = backgroundBrightness > 600;
-
-        double redBiasFactor = isBrightBackground ? 1.4 : 1.0;
-
-        foreach (var brush in _neonCandidates)
-        {
-            var solid = (SolidColorBrush)brush;
-            double dist = GetColorDistance(solid.Color, background);
-
-            if (solid.Color == Colors.Red && isBrightBackground)
-            {
-                dist *= redBiasFactor;
-            }
-
-            if (dist > maxDiff)
-            {
-                maxDiff = dist;
-                bestBrush = brush;
-            }
-        }
-
-        if (!ignoreHysteresis && currentBrush is SolidColorBrush currentSolid)
-        {
-            double currentDist = GetColorDistance(currentSolid.Color, background);
-
-            if (currentSolid.Color == Colors.Red && isBrightBackground)
-            {
-                currentDist *= redBiasFactor;
-            }
-
-            double threshold = currentDist * 1.25;
-
-            if (maxDiff < threshold)
-            {
-                return currentBrush;
-            }
-        }
-
-        return bestBrush;
-    }
-
-    private double GetColorDistance(Color c1, Color c2)
-    {
-        long rDiff = c1.R - c2.R;
-        long gDiff = c1.G - c2.G;
-        long bDiff = c1.B - c2.B;
-        return (rDiff * rDiff) + (gDiff * gDiff) + (bDiff * bDiff);
-    }
-
-    private void SmoothColorTransition(Brush newBrush)
-    {
-        if (CrosshairColor is not SolidColorBrush currentBrush || newBrush is not SolidColorBrush targetBrush) return;
-
-        if (currentBrush.Color == targetBrush.Color) return;
-
-        var freshBrush = new SolidColorBrush(currentBrush.Color);
-        CrosshairColor = freshBrush;
-
-        var colorAnimation = new ColorAnimation
-        {
-            From = currentBrush.Color,
-            To = targetBrush.Color,
-            Duration = new Duration(TimeSpan.FromMilliseconds(200)),
-            FillBehavior = FillBehavior.HoldEnd
-        };
-
-        colorAnimation.Completed += (s, e) =>
-        {
-            CrosshairColor = targetBrush;
-            UpdateCrosshairVisuals();
-        };
-
-        freshBrush.BeginAnimation(SolidColorBrush.ColorProperty, colorAnimation);
-        UpdateCrosshairVisuals();
+        public Brush CrosshairColor = Brushes.Red;
+        public Brush OutlineColor = Brushes.Black;
+        public CrosshairStyle CrosshairStyle = CrosshairStyle.StandardCross;
+        public double CrosshairGap = 9.7;
+        public double CrosshairLength = 8.0;
+        public double CrosshairLengthY = 8.0;
+        public double CrosshairOpacity = 1.0;
+        public double LineThickness = 3.4;
+        public double LineThicknessY = 3.4;
+        public double OutlineThickness = 1.0;
+        public double RotationAngle = 0;
+        public double XOffset = 0;
+        public double YOffset = 0;
+        public bool DynamicColorEnabled = false;
     }
 }

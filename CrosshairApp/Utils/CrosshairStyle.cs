@@ -5,6 +5,5 @@ public enum CrosshairStyle
     StandardCross,
     Tee,
     Circle,
-    Dot,
-    CircleWithX
+    Dot
 }

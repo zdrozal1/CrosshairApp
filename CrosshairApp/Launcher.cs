@@ -11,7 +11,7 @@ public static class Launcher
 {
     public static string ConfigFilePath;
     private static KeyboardHook _keyboardHook;
-    public const string Version = "1.0.0";
+    public const string Version = "1.1.0";
 
     [STAThread]
     public static void Main()

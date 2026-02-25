@@ -17,8 +17,6 @@ using Application = System.Windows.Application;
 using Brush = System.Windows.Media.Brush;
 using Brushes = System.Windows.Media.Brushes;
 using Color = System.Windows.Media.Color;
-using ContextMenu = System.Windows.Forms.ContextMenu;
-using MenuItem = System.Windows.Forms.MenuItem;
 
 namespace CrosshairApp.Windows;
 
@@ -34,14 +32,12 @@ public class CrosshairWindow : Window
     private DispatcherTimer _colorUpdateTimer;
     private DispatcherTimer _processCheckTimer;
 
-    // Config State
     private string _currentProfileName;
     private bool _adsEnabledForProfile;
     private VisualConfiguration _hipfireConfig;
     private VisualConfiguration _adsConfig;
     private VisualConfiguration _activeConfig;
 
-    // State Flags
     private bool _isAdsActive;
     private bool _isPreviewMode;
     private bool _isPreviewingAds;
@@ -49,7 +45,6 @@ public class CrosshairWindow : Window
     private bool _userHidden;
     private bool _processCheckEnabled;
 
-    // Dynamic Color
     private readonly System.Drawing.Bitmap _pixelBuffer = new(40, 40, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
     private DateTime _lastColorUpdate = DateTime.MinValue;
     private Color _lastAverageBackground = Colors.Black;
@@ -58,7 +53,6 @@ public class CrosshairWindow : Window
         Brushes.Red, Brushes.Lime, Brushes.Blue, Brushes.Yellow, Brushes.Cyan, Brushes.Magenta
     };
 
-    // Native Imports
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern int GetWindowThreadProcessId(IntPtr hWnd, out int lpdwProcessId);
     [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
@@ -106,9 +100,6 @@ public class CrosshairWindow : Window
         };
     }
 
-    /**
-     * Loads all settings for the given profile, including the embedded ADS layer.
-     */
     public void LoadProfile(string profileName)
     {
         _currentProfileName = profileName;
@@ -157,20 +148,17 @@ public class CrosshairWindow : Window
         }
     }
 
-    private Brush SafeBrush(string hex)
+    private static Brush SafeBrush(string hex)
     {
         try { return (SolidColorBrush)new BrushConverter().ConvertFrom(hex); }
         catch { return Brushes.Red; }
     }
 
-    private double SafeDouble(string profile, string key, string def)
+    private static double SafeDouble(string profile, string key, string def)
     {
         return Convert.ToDouble(ConfigUtils.ConfigRead(profile, key, def));
     }
 
-    /**
-     * Updates the rendering logic based on current state (Preview vs Live, ADS vs Hipfire).
-     */
     private void ResolveActiveConfiguration()
     {
         if (_isPreviewMode)
@@ -185,9 +173,6 @@ public class CrosshairWindow : Window
         UpdateCrosshairVisuals();
     }
 
-    /**
-     * Called by SettingsWindow to force the crosshair to show ADS or Hipfire while editing.
-     */
     public void SetPreviewMode(bool enabled, bool showAds)
     {
         _isPreviewMode = enabled;
@@ -245,10 +230,6 @@ public class CrosshairWindow : Window
         ResolveActiveConfiguration();
     }
 
-    /**
-         * Updated to prevent clipping for circular shapes (Circle and Dot).
-         * Forces a square window based on the X-Length (Diameter/Size).
-         */
     private void UpdateCrosshairVisuals()
     {
         var c = _activeConfig;
@@ -302,10 +283,6 @@ public class CrosshairWindow : Window
         AddDotWithOutline(root, _activeConfig.CrosshairLength);
     }
 
-    /**
-     * Renders a filled Dot with an optional outline.
-     * Uses layering (Outline Ellipse behind Main Ellipse) to ensure perfect rendering.
-     */
     private void AddDotWithOutline(Canvas root, double diameter)
     {
         var c = _activeConfig;
@@ -362,6 +339,7 @@ public class CrosshairWindow : Window
         AddLineWithOutline(root, -c.CrosshairLength - c.CrosshairGap / 2, 0, -c.CrosshairGap / 2, 0, c.LineThickness);
         AddLineWithOutline(root, c.CrosshairGap / 2, 0, c.CrosshairLength + c.CrosshairGap / 2, 0, c.LineThickness);
     }
+
     private void AddCircleCrosshair(Canvas root)
     {
 
@@ -369,7 +347,6 @@ public class CrosshairWindow : Window
         double diameter = _activeConfig.CrosshairLength * 2;
         AddCircleWithOutline(root, diameter);
     }
-
 
     private void AddCircleWithXCrosshair(Canvas root)
     {
@@ -467,32 +444,37 @@ public class CrosshairWindow : Window
         root.RenderTransform = new RotateTransform(_activeConfig.RotationAngle, Width / 2, Height / 2);
     }
 
-
     private void UpdateDynamicColor(object sender, EventArgs e)
     {
-        if (!_activeConfig.DynamicColorEnabled || Visibility != Visibility.Visible) return;
-        if ((DateTime.Now - _lastColorUpdate).TotalMilliseconds < 200) return;
-        _lastColorUpdate = DateTime.Now;
-
-        var centerX = (int)SystemParameters.PrimaryScreenWidth / 2;
-        var centerY = (int)SystemParameters.PrimaryScreenHeight / 2;
-        var avgColor = GetAverageScreenColor(centerX, centerY, 20, 5);
-
-        if (GetColorDistance(avgColor, _lastAverageBackground) < 1500) return;
-        _lastAverageBackground = avgColor;
-
-        var bestBrush = GetBestContrastBrush(avgColor, _activeConfig.CrosshairColor, false);
-
-        if (_activeConfig.CrosshairColor is SolidColorBrush currentSolid)
+        try
         {
-            if (!_neonCandidates.Any(x => ((SolidColorBrush)x).Color == currentSolid.Color))
+            if (_activeConfig == null || !_activeConfig.DynamicColorEnabled || Visibility != Visibility.Visible) return;
+            if ((DateTime.Now - _lastColorUpdate).TotalMilliseconds < 200) return;
+            _lastColorUpdate = DateTime.Now;
+
+            var centerX = (int)SystemParameters.PrimaryScreenWidth / 2;
+            var centerY = (int)SystemParameters.PrimaryScreenHeight / 2;
+            var avgColor = GetAverageScreenColor(centerX, centerY, 20, 5);
+
+            if (GetColorDistance(avgColor, _lastAverageBackground) < 1500) return;
+            _lastAverageBackground = avgColor;
+
+            var bestBrush = GetBestContrastBrush(avgColor, _activeConfig.CrosshairColor, false);
+
+            if (_activeConfig.CrosshairColor is SolidColorBrush currentSolid)
             {
-                _activeConfig.CrosshairColor = bestBrush;
-                UpdateCrosshairVisuals();
-                return;
+                if (!_neonCandidates.Any(x => x is SolidColorBrush sb && sb.Color == currentSolid.Color))
+                {
+                    _activeConfig.CrosshairColor = bestBrush;
+                    UpdateCrosshairVisuals();
+                    return;
+                }
             }
+            SmoothColorTransition(bestBrush);
         }
-        SmoothColorTransition(bestBrush);
+        catch (Exception)
+        {
+        }
     }
 
     private Color GetAverageScreenColor(int centerX, int centerY, int radius, int step)
@@ -566,7 +548,7 @@ public class CrosshairWindow : Window
         return bestBrush;
     }
 
-    private double GetColorDistance(Color c1, Color c2)
+    private static double GetColorDistance(Color c1, Color c2)
     {
         long rDiff = c1.R - c2.R;
         long gDiff = c1.G - c2.G;
@@ -599,7 +581,6 @@ public class CrosshairWindow : Window
         freshBrush.BeginAnimation(SolidColorBrush.ColorProperty, colorAnimation);
         UpdateCrosshairVisuals();
     }
-
 
     public void UpdateTargetProcess(string processName)
     {
@@ -672,15 +653,17 @@ public class CrosshairWindow : Window
         var assembly = Assembly.GetExecutingAssembly();
         using var stream = assembly.GetManifestResourceStream(resourceName);
         if (stream == null) return;
+
+        var contextMenu = new ContextMenuStrip();
+        contextMenu.Items.Add("Settings", null, (_, _) => ShowSettingsWindow());
+        contextMenu.Items.Add("Exit", null, (_, _) => ExitApplication());
+
         _notifyIcon = new NotifyIcon
         {
             Icon = new Icon(stream),
             Visible = true,
             Text = TrayIconText,
-            ContextMenu = new ContextMenu([
-                new MenuItem("Settings", (_, _) => ShowSettingsWindow()),
-                new MenuItem("Exit", (_, _) => ExitApplication())
-            ])
+            ContextMenuStrip = contextMenu
         };
         _notifyIcon.DoubleClick += (_, _) => ShowSettingsWindow();
     }
@@ -711,7 +694,6 @@ public class CrosshairWindow : Window
         var extendedStyle = GetWindowLong(hwnd, GwlExstyle);
         SetWindowLong(hwnd, GwlExstyle, extendedStyle | WsExTransparent);
     }
-
     private class VisualConfiguration
     {
         public Brush CrosshairColor = Brushes.Red;

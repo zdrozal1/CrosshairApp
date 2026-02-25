@@ -1,21 +1,14 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net481</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <OutputType>WinExe</OutputType>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms> 
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
-    <SignAssembly>true</SignAssembly>
-    <ApplicationIcon>Images\target.ico</ApplicationIcon>
-    <RootNamespace>CrosshairApp</RootNamespace>
-    <AssemblyName>CrosshairApp</AssemblyName>
-    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ApplicationIcon>Images\target.ico</ApplicationIcon>
   </PropertyGroup>
-
-  <ItemGroup>
-    <Reference Include="System.Windows.Forms" />
-  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Extended.Wpf.Toolkit" Version="4.6.1" />
@@ -24,5 +17,4 @@
   <ItemGroup>
     <EmbeddedResource Include="Images\target.ico" />
   </ItemGroup>
-
 </Project>

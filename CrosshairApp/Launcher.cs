@@ -16,14 +16,24 @@ public static class Launcher
     [STAThread]
     public static void Main()
     {
+        AppDomain.CurrentDomain.UnhandledException += (sender, args) => { };
+
+        var app = new Application();
+        app.DispatcherUnhandledException += (sender, args) =>
+        {
+            args.Handled = true;
+        };
+
         var assemblyPath = Assembly.GetExecutingAssembly().Location;
         var assemblyDir = Path.GetDirectoryName(assemblyPath);
+        var baseDir = string.IsNullOrWhiteSpace(assemblyDir) ? AppDomain.CurrentDomain.BaseDirectory : assemblyDir;
 
-        ConfigFilePath = Path.Combine(assemblyDir ?? throw new InvalidOperationException(), "config.properties");
+        if (string.IsNullOrWhiteSpace(baseDir)) return;
+
+        ConfigFilePath = Path.Combine(baseDir, "config.properties");
 
         if (!File.Exists(ConfigFilePath)) ConfigUtils.CreateConfig();
 
-        var app = new Application();
         var window = new CrosshairWindow();
 
         _keyboardHook = new KeyboardHook();

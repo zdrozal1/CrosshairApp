@@ -24,27 +24,37 @@ public static class ConfigUtils
     public static void LoadConfig()
     {
         _configCache.Clear();
+
+        if (string.IsNullOrWhiteSpace(Launcher.ConfigFilePath)) return;
+
         if (!File.Exists(Launcher.ConfigFilePath))
         {
             CreateConfig();
             return;
         }
 
-        foreach (var line in File.ReadLines(Launcher.ConfigFilePath))
+        try
         {
-            if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#")) continue;
-            var parts = line.Split(new[] { '=' }, 2);
-            if (parts.Length == 2)
+            foreach (var line in File.ReadLines(Launcher.ConfigFilePath))
             {
-                _configCache[parts[0].Trim()] = parts[1].Trim();
+                if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#")) continue;
+                var parts = line.Split(new[] { '=' }, 2);
+                if (parts.Length == 2)
+                {
+                    _configCache[parts[0].Trim()] = parts[1].Trim();
+                }
             }
+            _isDirty = false;
         }
-        _isDirty = false;
+        catch (Exception)
+        {
+            CheckAndSetDefaultValues(DefaultProfileName);
+        }
     }
 
     public static void SaveConfig()
     {
-        if (!_isDirty) return;
+        if (!_isDirty || string.IsNullOrWhiteSpace(Launcher.ConfigFilePath)) return;
 
         try
         {
@@ -52,13 +62,15 @@ public static class ConfigUtils
             writer.WriteLine("# Configuration Properties");
             foreach (var kvp in _configCache)
             {
-                writer.WriteLine($"{kvp.Key}={kvp.Value}");
+                if (kvp.Key != null && kvp.Value != null)
+                {
+                    writer.WriteLine($"{kvp.Key}={kvp.Value}");
+                }
             }
             _isDirty = false;
         }
-        catch (IOException)
+        catch (Exception)
         {
-
         }
     }
 

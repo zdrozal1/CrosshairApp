@@ -34,24 +34,45 @@ public class KeyboardHook
 
     private static IntPtr SetHook(LowLevelKeyboardProc proc)
     {
-        using var curProcess = Process.GetCurrentProcess();
-        using var curModule = curProcess.MainModule;
-        return SetWindowsHookEx(WhKeyboardLl, proc, GetModuleHandle(curModule?.ModuleName), 0);
+        try
+        {
+            using var curProcess = Process.GetCurrentProcess();
+            using var curModule = curProcess.MainModule;
+            if (curModule != null && curModule.ModuleName != null)
+            {
+                return SetWindowsHookEx(WhKeyboardLl, proc, GetModuleHandle(curModule.ModuleName), 0);
+            }
+            return IntPtr.Zero;
+        }
+        catch (Exception)
+        {
+            return IntPtr.Zero;
+        }
     }
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode < 0 || (wParam != (IntPtr)WmKeydown && wParam != (IntPtr)WmSyskeydown))
-            return CallNextHookEx(_hookId, nCode, wParam, lParam);
-        var vkCode = Marshal.ReadInt32(lParam);
-        var key = KeyInterop.KeyFromVirtualKey(vkCode);
+        try
+        {
+            if (nCode < 0 || (wParam != (IntPtr)WmKeydown && wParam != (IntPtr)WmSyskeydown))
+                return CallNextHookEx(_hookId, nCode, wParam, lParam);
 
-        if (Keyboard.Modifiers == ModifierKeys.Control && Keyboard.Modifiers == ModifierKeys.Shift && key == Key.H)
-            _window.ToggleVisibility();
-        if (Keyboard.Modifiers == ModifierKeys.Control && Keyboard.Modifiers == ModifierKeys.Shift &&
-            key == Key.PageUp) _window.SwitchToNextProfile();
-        if (Keyboard.Modifiers == ModifierKeys.Control && Keyboard.Modifiers == ModifierKeys.Shift &&
-            key == Key.PageDown) _window.SwitchToPreviousProfile();
+            var vkCode = Marshal.ReadInt32(lParam);
+            var key = KeyInterop.KeyFromVirtualKey(vkCode);
+
+            var modifiers = Keyboard.Modifiers;
+            var isCtrlShift = modifiers.HasFlag(ModifierKeys.Control) && modifiers.HasFlag(ModifierKeys.Shift);
+
+            if (isCtrlShift && _window != null)
+            {
+                if (key == Key.H) _window.ToggleVisibility();
+                else if (key == Key.PageUp) _window.SwitchToNextProfile();
+                else if (key == Key.PageDown) _window.SwitchToPreviousProfile();
+            }
+        }
+        catch (Exception)
+        {
+        }
 
         return CallNextHookEx(_hookId, nCode, wParam, lParam);
     }

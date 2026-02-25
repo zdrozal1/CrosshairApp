@@ -29,25 +29,43 @@ namespace CrosshairApp.Utils
 
         private static IntPtr SetHook(LowLevelMouseProc proc)
         {
-            using var curProcess = Process.GetCurrentProcess();
-            using var curModule = curProcess.MainModule;
-            return SetWindowsHookEx(WhMouseLl, proc,
-                GetModuleHandle(curModule?.ModuleName), 0);
+            try
+            {
+                using var curProcess = Process.GetCurrentProcess();
+                using var curModule = curProcess.MainModule;
+                if (curModule != null && curModule.ModuleName != null)
+                {
+                    return SetWindowsHookEx(WhMouseLl, proc, GetModuleHandle(curModule.ModuleName), 0);
+                }
+                return IntPtr.Zero;
+            }
+            catch (Exception)
+            {
+                return IntPtr.Zero;
+            }
         }
 
         private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
 
         private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
         {
-            if (nCode < 0) return CallNextHookEx(_hookId, nCode, wParam, lParam);
-            if (wParam == (IntPtr)WmRbuttondown)
+            try
             {
-                RightMouseDown?.Invoke(null, EventArgs.Empty);
+                if (nCode < 0) return CallNextHookEx(_hookId, nCode, wParam, lParam);
+
+                if (wParam == (IntPtr)WmRbuttondown)
+                {
+                    RightMouseDown?.Invoke(null, EventArgs.Empty);
+                }
+                else if (wParam == (IntPtr)WmRbuttonup)
+                {
+                    RightMouseUp?.Invoke(null, EventArgs.Empty);
+                }
             }
-            else if (wParam == (IntPtr)WmRbuttonup)
+            catch (Exception)
             {
-                RightMouseUp?.Invoke(null, EventArgs.Empty);
             }
+
             return CallNextHookEx(_hookId, nCode, wParam, lParam);
         }
 
